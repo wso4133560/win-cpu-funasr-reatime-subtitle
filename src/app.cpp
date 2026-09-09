@@ -14,8 +14,8 @@
 
 namespace fs=std::filesystem;
 using namespace Gdiplus;
-constexpr UINT WM_TEXT_READY=WM_APP+1,WM_STATUS_READY=WM_APP+2,WM_TRAY=WM_APP+3;
-constexpr int Pause=100,Lock=101,Bigger=102,Smaller=103,Restart=104,Exit=105,Logs=106;
+constexpr UINT WM_TEXT_READY=WM_APP+1,WM_STATUS_READY=WM_APP+2,WM_TRAY=WM_APP+3,WM_REVEAL=WM_APP+4;
+constexpr int Pause=100,Lock=101,Bigger=102,Smaller=103,Restart=104,Exit=105,Logs=106,Show=107;
 struct App {
     HWND window{};
     fs::path root;
@@ -31,6 +31,11 @@ struct App {
     std::atomic<bool> alive{true};
     std::wstring test_audio;
     bool testing=false;
+    bool window_test=false,reactivated=false,last_render=false,frame_alpha=false;
+    int test_stage=0,exit_code=0;
+    HANDLE test_child=nullptr;
+    ULONGLONG test_started=0;
+    std::ofstream window_report;
 } app;
 
 std::wstring wide(const std::string& s){
@@ -70,18 +75,58 @@ void paint(Bitmap& bitmap){
     g.DrawString(app.previous.c_str(),-1,&prior_font,previous,&format,&old);
     RectF current(28,87,REAL(w-56),REAL(h-122));
     g.DrawString(app.current.c_str(),-1,&main_font,current,&format,&white);
-    const wchar_t* help=app.locked?L"CLICK-THROUGH  ·  Ctrl+Alt+L unlock  ·  Ctrl+Alt+P pause  ·  Ctrl+Alt+Q exit":L"DRAG TO MOVE  ·  Right-click settings  ·  Ctrl+Alt+L click-through  ·  Ctrl+Alt+P pause";
+    const wchar_t* help=app.locked?L"CLICK-THROUGH  ·  Ctrl+Alt+S show / unlock  ·  Ctrl+Alt+P pause  ·  Ctrl+Alt+Q exit":L"DRAG TO MOVE  ·  Right-click settings  ·  Ctrl+Alt+S show  ·  Ctrl+Alt+L click-through";
     RectF foot(24,REAL(h-26),REAL(w-48),20);g.DrawString(help,-1,&foot_font,foot,&format,&secondary);
 }
-void render(){
-    if(!app.window)return;
+bool render(){
+    app.last_render=false;
+    if(!app.window)return false;
     RECT rect;GetWindowRect(app.window,&rect);SIZE size{rect.right-rect.left,rect.bottom-rect.top};
-    Bitmap bitmap(size.cx,size.cy,PixelFormat32bppPARGB);paint(bitmap);
-    HBITMAP handle=nullptr;bitmap.GetHBITMAP(Color(0,0,0,0),&handle);
-    HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);auto old=SelectObject(dc,handle);
+    if(size.cx<=0||size.cy<=0)return false;
+    // Draw directly into the premultiplied BGRA surface consumed by Windows.
+    // Avoid losing the alpha channel during a GDI+ -> HBITMAP conversion.
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=size.cx;info.bmiHeader.biHeight=-size.cy;
+    info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    void* pixels=nullptr;
+    HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
+    HBITMAP handle=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    if(!screen||!dc||!handle){
+        if(handle)DeleteObject(handle);if(dc)DeleteDC(dc);if(screen)ReleaseDC(nullptr,screen);return false;
+    }
+    {
+        Bitmap bitmap(size.cx,size.cy,size.cx*4,PixelFormat32bppPARGB,static_cast<BYTE*>(pixels));paint(bitmap);
+    }
+    if(app.window_test){
+        bool clear=false,translucent=false,opaque=false;
+        auto data=static_cast<BYTE*>(pixels);
+        for(LONG i=0;i<size.cx*size.cy;++i){BYTE a=data[i*4+3];clear|=a==0;translucent|=a>0&&a<255;opaque|=a==255;}
+        app.frame_alpha=clear&&translucent&&opaque;
+    }
+    auto old=SelectObject(dc,handle);
     POINT dst{rect.left,rect.top},src{};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-    UpdateLayeredWindow(app.window,screen,&dst,&size,dc,&src,0,&blend,ULW_ALPHA);
+    app.last_render=UpdateLayeredWindow(app.window,screen,&dst,&size,dc,&src,0,&blend,ULW_ALPHA)!=FALSE;
     SelectObject(dc,old);DeleteObject(handle);DeleteDC(dc);ReleaseDC(nullptr,screen);
+    return app.last_render;
+}
+void show_overlay(bool reset_position){
+    POINT cursor{};GetCursorPos(&cursor);
+    HMONITOR monitor=reset_position?MonitorFromPoint(cursor,MONITOR_DEFAULTTOPRIMARY):MonitorFromWindow(app.window,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(MONITORINFO)};GetMonitorInfoW(monitor,&info);
+    RECT area=info.rcWork,rect{};GetWindowRect(app.window,&rect);
+    int width=std::min(1000,int(area.right-area.left-40)),height=std::min(230,int(area.bottom-area.top));
+    int x=reset_position?area.left+(area.right-area.left-width)/2:std::clamp(int(rect.left),int(area.left),int(area.right)-width);
+    int y=reset_position?std::max(int(area.top),int(area.bottom)-height-30):std::clamp(int(rect.top),int(area.top),int(area.bottom)-height);
+    if(reset_position){
+        app.locked=false;
+        SetWindowLongPtrW(app.window,GWL_EXSTYLE,GetWindowLongPtrW(app.window,GWL_EXSTYLE)&~WS_EX_TRANSPARENT);
+    }
+    // The first ShowWindow can obey the launcher's STARTUPINFO/SW_HIDE instead
+    // of our argument. SWP_SHOWWINDOW explicitly restores visibility afterward.
+    ShowWindow(app.window,IsIconic(app.window)?SW_RESTORE:SW_SHOWNOACTIVATE);
+    SetWindowPos(app.window,HWND_TOPMOST,x,y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    if(!render()&&!app.window_test)
+        MessageBoxW(app.window,L"The subtitle window could not be drawn. Please restart the application.",L"FunASR Subtitle",MB_OK|MB_ICONERROR);
 }
 void save_settings(){
     auto file=(app.root/L"settings.ini").wstring();
@@ -109,6 +154,7 @@ void start_pipeline(){
 }
 void command(int id){
     switch(id){
+    case Show:show_overlay(true);return;
     case Pause:
         app.paused=!app.paused;if(app.pipeline)app.pipeline->pause(app.paused);
         {std::lock_guard lock(app.mutex);app.pending.clear();}
@@ -127,6 +173,7 @@ void command(int id){
 }
 void menu(){
     auto m=CreatePopupMenu();
+    AppendMenuW(m,MF_STRING,Show,L"Show / reset subtitle position  Ctrl+Alt+S");
     AppendMenuW(m,MF_STRING,Pause,app.paused?L"Resume  Ctrl+Alt+P":L"Pause  Ctrl+Alt+P");
     AppendMenuW(m,MF_STRING|(app.locked?MF_CHECKED:0),Lock,L"Click-through  Ctrl+Alt+L");
     AppendMenuW(m,MF_STRING,Bigger,L"Larger text");AppendMenuW(m,MF_STRING,Smaller,L"Smaller text");
@@ -135,12 +182,52 @@ void menu(){
     POINT p;GetCursorPos(&p);SetForegroundWindow(app.window);
     int result=TrackPopupMenu(m,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,app.window,nullptr);DestroyMenu(m);if(result)command(result);
 }
+bool check_window(const char* phase){
+    RECT rect{};GetWindowRect(app.window,&rect);
+    MONITORINFO monitor{sizeof(MONITORINFO)};GetMonitorInfoW(MonitorFromWindow(app.window,MONITOR_DEFAULTTONEAREST),&monitor);
+    bool visible=IsWindowVisible(app.window)&&!IsIconic(app.window);
+    bool inside=rect.left>=monitor.rcWork.left&&rect.right<=monitor.rcWork.right&&rect.top>=monitor.rcWork.top&&rect.bottom<=monitor.rcWork.bottom;
+    auto style=GetWindowLongPtrW(app.window,GWL_EXSTYLE);
+    bool accessible=!app.locked&&!(style&WS_EX_TRANSPARENT);
+    bool topmost=(style&WS_EX_TOPMOST)!=0;
+    app.window_report<<phase<<": visible="<<visible<<" inside_work_area="<<inside<<" topmost="<<topmost
+        <<" unlocked="<<accessible<<" layered_update="<<app.last_render<<" transparent_translucent_opaque_pixels="<<app.frame_alpha<<std::endl;
+    return visible&&inside&&accessible&&topmost&&app.last_render&&app.frame_alpha;
+}
+void window_test_tick(){
+    bool failed=false;
+    if(app.test_stage==0){
+        if(!check_window("hidden startup"))failed=true;
+        else {
+            // Reproduce a lost, click-through window before relaunching the same EXE.
+            ShowWindow(app.window,SW_HIDE);
+            SetWindowPos(app.window,nullptr,-32000,-32000,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+            app.locked=true;SetWindowLongPtrW(app.window,GWL_EXSTYLE,GetWindowLongPtrW(app.window,GWL_EXSTYLE)|WS_EX_TRANSPARENT);
+            STARTUPINFOW startup{sizeof(STARTUPINFOW)};startup.dwFlags=STARTF_USESHOWWINDOW;startup.wShowWindow=SW_HIDE;
+            PROCESS_INFORMATION child{};std::wstring args=GetCommandLineW();
+            if(!CreateProcessW(nullptr,args.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&child))failed=true;
+            else {CloseHandle(child.hThread);app.test_child=child.hProcess;app.test_stage=1;}
+        }
+    }else if(WaitForSingleObject(app.test_child,0)==WAIT_OBJECT_0){
+        DWORD code=1;GetExitCodeProcess(app.test_child,&code);
+        app.window_report<<"duplicate exited="<<code<<" activation_received="<<app.reactivated<<std::endl;
+        failed=code!=0||!app.reactivated||!check_window("duplicate launch recovery");
+        if(!failed){
+            ShowWindow(app.window,SW_MINIMIZE);show_overlay(true);
+            failed=!check_window("minimized window recovery");
+        }
+        app.exit_code=failed?1:0;DestroyWindow(app.window);return;
+    }
+    if(GetTickCount64()-app.test_started>10000)failed=true;
+    if(failed){app.window_report<<"FAIL"<<std::endl;app.exit_code=1;DestroyWindow(app.window);}
+}
 LRESULT CALLBACK proc(HWND w,UINT message,WPARAM wp,LPARAM lp){
     switch(message){
+    case WM_REVEAL:show_overlay(true);app.reactivated=true;return 1;
     case WM_LBUTTONDOWN:ReleaseCapture();SendMessageW(w,WM_NCLBUTTONDOWN,HTCAPTION,lp);return 0;
     case WM_RBUTTONUP:menu();return 0;
     case WM_HOTKEY:command(int(wp));return 0;
-    case WM_TRAY:if(lp==WM_RBUTTONUP||lp==WM_LBUTTONUP)menu();return 0;
+    case WM_TRAY:if(lp==WM_RBUTTONUP)menu();else if(lp==WM_LBUTTONUP||lp==WM_LBUTTONDBLCLK)show_overlay(true);return 0;
     case WM_TEXT_READY:{
         std::deque<SubtitleEvent> events;{std::lock_guard lock(app.mutex);events.swap(app.pending);}
         if(app.paused)return 0;
@@ -148,14 +235,22 @@ LRESULT CALLBACK proc(HWND w,UINT message,WPARAM wp,LPARAM lp){
             if(e.id!=app.current_id){app.previous=app.current_id?app.current:L"";app.current_id=e.id;}
             app.current=wide(e.text);app.status=L"CPU · "+std::to_wstring(int(e.compute_ms))+L" ms · "+(e.final?L"Final":L"Live");
         }render();return 0;}
-    case WM_STATUS_READY:{std::lock_guard lock(app.mutex);app.status=wide(app.pending_status);render();return 0;}
-    case WM_DISPLAYCHANGE:{RECT area;SystemParametersInfoW(SPI_GETWORKAREA,0,&area,0);SetWindowPos(w,HWND_TOPMOST,area.left+40,area.bottom-270,0,0,SWP_NOSIZE|SWP_NOACTIVATE);render();return 0;}
+    case WM_STATUS_READY:{
+        std::lock_guard lock(app.mutex);app.status=wide(app.pending_status);
+        if(!app.current_id&&!app.paused&&app.pending_status.starts_with("Listening to Windows output:"))app.current=L"Waiting for system audio…";
+        render();return 0;}
+    case WM_DISPLAYCHANGE:show_overlay(false);return 0;
+    case WM_SETTINGCHANGE:if(wp==SPI_SETWORKAREA)show_overlay(false);return 0;
     case WM_TIMER:
+        if(wp==3){window_test_tick();return 0;}
         if(wp==1){KillTimer(w,1);PlaySoundW(app.test_audio.c_str(),nullptr,SND_FILENAME|SND_ASYNC|SND_NODEFAULT);}
         if(wp==2){
             KillTimer(w,2);
             fs::create_directories(app.root/L"test-output");
             std::ofstream state(app.root/L"test-output/gui-state.txt");state<<utf8(app.current)<<'\n'<<utf8(app.status)<<'\n';
+            RECT rect{};GetWindowRect(w,&rect);
+            state<<"visible="<<IsWindowVisible(w)<<" layered_update="<<app.last_render
+                <<" rect="<<rect.left<<','<<rect.top<<','<<rect.right<<','<<rect.bottom<<'\n';
             Bitmap b(1000,230,PixelFormat32bppPARGB);paint(b);
             CLSID png={0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
             b.Save((app.root/L"test-output/gui-live.png").c_str(),&png);
@@ -163,7 +258,7 @@ LRESULT CALLBACK proc(HWND w,UINT message,WPARAM wp,LPARAM lp){
         }return 0;
     case WM_DESTROY:
         app.alive=false;app.pipeline.reset();Shell_NotifyIconW(NIM_DELETE,&app.tray);
-        UnregisterHotKey(w,Pause);UnregisterHotKey(w,Lock);UnregisterHotKey(w,Exit);PostQuitMessage(0);return 0;
+        UnregisterHotKey(w,Pause);UnregisterHotKey(w,Lock);UnregisterHotKey(w,Exit);UnregisterHotKey(w,Show);PostQuitMessage(app.exit_code);return 0;
     }
     return DefWindowProcW(w,message,wp,lp);
 }
@@ -179,33 +274,62 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         CLSID png={0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
         auto status=b.Save(argv[2],&png);LocalFree(argv);return status==Ok?0:1;
     }
-    int test_seconds=0;
+    int test_seconds=0;std::wstring window_class=L"FunASRSubtitle",mutex_name=L"Local\\FunASRSubtitle.SingleInstance",test_report;
     for(int i=1;i<argc;++i){
         if(std::wstring(argv[i])==L"--test-seconds"&&i+1<argc)test_seconds=std::clamp(_wtoi(argv[++i]),5,3600);
         else if(std::wstring(argv[i])==L"--test-audio"&&i+1<argc)app.test_audio=argv[++i];
+        else if(std::wstring(argv[i])==L"--test-window"&&i+1<argc){
+            app.window_test=true;std::wstring session=argv[++i];window_class+=L".Test."+session;mutex_name+=L".Test."+session;
+        }
+        else if(std::wstring(argv[i])==L"--test-report"&&i+1<argc)test_report=argv[++i];
     }
     app.testing=test_seconds>0;
     LocalFree(argv);
-    HANDLE singleton=CreateMutexW(nullptr,FALSE,L"Local\\FunASRSubtitle.SingleInstance");
-    if(GetLastError()==ERROR_ALREADY_EXISTS){MessageBoxW(nullptr,L"FunASR Subtitle is already running. Use its tray icon.",L"FunASR Subtitle",MB_OK);CloseHandle(singleton);return 0;}
+    HANDLE singleton=CreateMutexW(nullptr,FALSE,mutex_name.c_str());
+    if(!singleton){GdiplusShutdown(token);return 1;}
+    if(GetLastError()==ERROR_ALREADY_EXISTS){
+        // The first process may still be creating its window. Wait briefly for it,
+        // then ask it to reveal itself without creating another GUI or engine.
+        bool activated=false;
+        for(int attempt=0;attempt<30;++attempt){
+            if(HWND existing=FindWindowW(window_class.c_str(),nullptr)){
+                DWORD result=0;GetWindowThreadProcessId(existing,&result);AllowSetForegroundWindow(result);
+                DWORD_PTR reply=0;
+                activated=SendMessageTimeoutW(existing,WM_REVEAL,0,0,SMTO_ABORTIFHUNG,2000,&reply)&&reply==1;
+                break;
+            }
+            Sleep(100);
+        }
+        if(!activated&&!app.window_test)MessageBoxW(nullptr,L"The running subtitle application could not be reached. It may be on another Windows desktop. Close FunASRSubtitle.exe in Task Manager, then open it again.",L"FunASR Subtitle",MB_OK|MB_ICONERROR);
+        CloseHandle(singleton);GdiplusShutdown(token);return activated?0:1;
+    }
+    if(app.window_test){
+        app.window_report.open(fs::path(test_report));app.test_started=GetTickCount64();app.exit_code=1;
+        app.current=L"Subtitle window visibility regression test";
+    }
     auto ini=(app.root/L"settings.ini").wstring();
     app.font_size=std::clamp(int(GetPrivateProfileIntW(L"overlay",L"font",28,ini.c_str())),18,42);
     app.opacity=std::clamp(int(GetPrivateProfileIntW(L"overlay",L"opacity",175,ini.c_str())),30,240);
     app.threads=std::clamp(int(GetPrivateProfileIntW(L"engine",L"threads",8,ini.c_str())),1,32);
-    WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=instance;c.lpszClassName=L"FunASRSubtitle";c.hCursor=LoadCursor(nullptr,IDC_ARROW);RegisterClassW(&c);
+    WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=instance;c.lpszClassName=window_class.c_str();c.hCursor=LoadCursor(nullptr,IDC_ARROW);RegisterClassW(&c);
     RECT area;SystemParametersInfoW(SPI_GETWORKAREA,0,&area,0);int width=std::min(1000,int(area.right-area.left-40));
     app.window=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOPMOST|WS_EX_TOOLWINDOW,c.lpszClassName,L"FunASR Subtitle",WS_POPUP,
         area.left+(area.right-area.left-width)/2,area.bottom-260,width,230,nullptr,nullptr,instance,nullptr);
     if(!app.window)return 1;
+    if(!app.window_test){
     app.tray.cbSize=sizeof(app.tray);app.tray.hWnd=app.window;app.tray.uID=1;
     app.tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;app.tray.uCallbackMessage=WM_TRAY;
     app.tray.hIcon=LoadIconW(nullptr,IDI_INFORMATION);wcscpy_s(app.tray.szTip,L"FunASR Subtitle — system audio");Shell_NotifyIconW(NIM_ADD,&app.tray);
     bool hotkeys=RegisterHotKey(app.window,Pause,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'P')!=0;
     hotkeys=RegisterHotKey(app.window,Lock,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'L')&&hotkeys;
     hotkeys=RegisterHotKey(app.window,Exit,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'Q')&&hotkeys;
+    hotkeys=RegisterHotKey(app.window,Show,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'S')&&hotkeys;
     if(!hotkeys)MessageBoxW(app.window,L"Some shortcuts are in use. The tray menu remains available.",L"Shortcut conflict",MB_OK);
-    ShowWindow(app.window,SW_SHOWNOACTIVATE);render();start_pipeline();
+    }
+    show_overlay(true);
+    if(app.window_test)SetTimer(app.window,3,100,nullptr);else start_pipeline();
     if(app.testing){if(!app.test_audio.empty())SetTimer(app.window,1,2000,nullptr);SetTimer(app.window,2,test_seconds*1000,nullptr);}
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}
-    CloseHandle(singleton);GdiplusShutdown(token);return 0;
+    if(app.test_child)CloseHandle(app.test_child);
+    CloseHandle(singleton);GdiplusShutdown(token);return app.exit_code;
 }

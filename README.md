@@ -22,7 +22,9 @@ pwsh -File scripts/build.ps1
 ## 使用
 
 - 播放浏览器、视频、会议软件的声音，字幕自动显示。采集当前默认输出设备的混音，不录制麦克风。
-- 拖动字幕面板调整位置，右键或托盘图标打开菜单。
+- 启动后立即显示半透明置顶字幕栏；没有声音时显示等待提示。
+- 拖动字幕面板调整位置，右键字幕栏或托盘图标打开菜单。
+- 再次打开 EXE、左键点击托盘图标或按 `Ctrl+Alt+S`，可将字幕栏恢复到鼠标所在屏幕下方，同时解除点击穿透。
 - `Ctrl+Alt+P`：暂停 / 继续；`Ctrl+Alt+L`：点击穿透 / 解锁；`Ctrl+Alt+Q`：退出。
 - 菜单可调字号、重启采集及模型、打开字幕目录。
 - `logs/` 按会话保存最终 SRT 和含临时修订的 TSV。本地保存，不上传。
@@ -58,4 +60,13 @@ python scripts/wer.py tests/english-reference.txt test-output/live-final.txt
 ```
 
 GUI 布局可离线渲染：`FunASRSubtitle.exe --render-preview preview.png`，不启动采集。
+构建脚本还会启动隔离的 GUI 测试实例（不加载模型、不采集声音），检查隐藏启动、透明图层、
+重复打开、移出屏幕和最小化后的恢复。测试实例自动退出，不干扰正在运行的正式实例。
+
+若提示已经运行却看不到字幕，请先按 `Ctrl+Alt+S` 或再次打开 EXE。若仍提示无法连接已有实例，
+在任务管理器中结束 `FunASRSubtitle.exe` 后，从资源管理器重新打开。
+GUI 必须运行在用户的交互桌面；自动化工具的隔离桌面内即使窗口标记为可见，用户也看不到。
+诊断命令 `build\Release\overlay_tests.exe --inspect-running` 可输出调用环境所在桌面、当前桌面
+是否有字幕窗口、进程号和窗口位置；须在用户正常桌面终端执行。
+
 源代码来源和修改范围见 [vendor/NOTICE.md](vendor/NOTICE.md)。
