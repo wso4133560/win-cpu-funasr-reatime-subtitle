@@ -1,0 +1,4 @@
+#include "resource.h"
+
+IDI_APP ICON "..\\assets\\funasr-app.ico"
+IDI_TRAY ICON "..\\assets\\funasr-tray.ico"

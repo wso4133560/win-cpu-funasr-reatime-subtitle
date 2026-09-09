@@ -11,6 +11,7 @@
 #include <mutex>
 #include <deque>
 #include <string>
+#include "resource.h"
 
 namespace fs=std::filesystem;
 using namespace Gdiplus;
@@ -323,7 +324,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     app.font_size=std::clamp(int(GetPrivateProfileIntW(L"overlay",L"font",28,ini.c_str())),18,42);
     app.opacity=std::clamp(int(GetPrivateProfileIntW(L"overlay",L"opacity",175,ini.c_str())),30,240);
     app.threads=std::clamp(int(GetPrivateProfileIntW(L"engine",L"threads",8,ini.c_str())),1,32);
-    WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=instance;c.lpszClassName=window_class.c_str();c.hCursor=LoadCursor(nullptr,IDC_ARROW);RegisterClassW(&c);
+    WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=instance;c.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_APP));c.lpszClassName=window_class.c_str();c.hCursor=LoadCursor(nullptr,IDC_ARROW);RegisterClassW(&c);
     RECT area;SystemParametersInfoW(SPI_GETWORKAREA,0,&area,0);int width=std::min(1000,int(area.right-area.left-40));
     app.window=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOPMOST|WS_EX_TOOLWINDOW,c.lpszClassName,L"FunASR Subtitle",WS_POPUP,
         area.left+(area.right-area.left-width)/2,area.bottom-260,width,230,nullptr,nullptr,instance,nullptr);
@@ -331,7 +332,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     if(!app.window_test){
     app.tray.cbSize=sizeof(app.tray);app.tray.hWnd=app.window;app.tray.uID=1;
     app.tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;app.tray.uCallbackMessage=WM_TRAY;
-    app.tray.hIcon=LoadIconW(nullptr,IDI_INFORMATION);wcscpy_s(app.tray.szTip,L"FunASR Subtitle — system audio");Shell_NotifyIconW(NIM_ADD,&app.tray);
+    app.tray.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_TRAY));wcscpy_s(app.tray.szTip,L"FunASR Subtitle — system audio");Shell_NotifyIconW(NIM_ADD,&app.tray);
     bool hotkeys=RegisterHotKey(app.window,Pause,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'P')!=0;
     hotkeys=RegisterHotKey(app.window,Lock,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'L')&&hotkeys;
     hotkeys=RegisterHotKey(app.window,Exit,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,'Q')&&hotkeys;
