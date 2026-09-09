@@ -13,3 +13,4 @@ __pycache__/
 /*.exe
 /install/*.exe
 /install/*.sha256
+/install/*.exe.part*

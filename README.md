@@ -53,6 +53,15 @@ pwsh -File scripts/package-installer.ps1
 识别模型、FSMN-VAD 模型、应用图标、README、第三方说明、开始菜单和桌面快捷方式以及卸载程序。
 安装默认使用当前用户目录 `%LOCALAPPDATA%\Programs\FunASRSubtitle`，不要求管理员权限；
 字幕日志和设置保存在安装目录中。安装包旁边会生成同名 `.sha256` 校验文件。
+GitHub Release 的安装包如果因网络限制无法一次下载，可下载 Release 中的全部
+`FunASRSubtitle-Setup.exe.partNN` 文件、`FunASRSubtitle-Setup.exe.sha256` 和
+`join-installer.ps1`，放在同一目录后执行：
+
+```powershell
+pwsh -File .\join-installer.ps1 -InputDirectory . -OutputPath .\FunASRSubtitle-Setup.exe
+```
+
+脚本会按编号合并分卷并自动校验 SHA256，校验通过后再运行安装程序。
 
 程序向上查找包含 `models/sensevoice-small-q8.gguf` 的目录。打包时将 EXE、`models/`、
 第三方许可证放在同一目录即可。CPU 图和音频转换均在本进程完成。
@@ -113,3 +122,4 @@ GUI 必须运行在用户的交互桌面；自动化工具的隔离桌面内即�
 是否有字幕窗口、进程号和窗口位置；须在用户正常桌面终端执行。
 
 源代码来源和修改范围见 [vendor/NOTICE.md](vendor/NOTICE.md)。
+
