@@ -47,8 +47,10 @@ void Pipeline::run(){
         auto session=std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
         std::ofstream log(config_.log_dir+"/"+session+".tsv");
         std::ofstream srt(config_.log_dir+"/"+session+".srt");
-        if(!log||!srt)throw std::runtime_error("Cannot write transcript logs");
+        std::ofstream segments(config_.log_dir+"/"+session+".segments.tsv");
+        if(!log||!srt||!segments)throw std::runtime_error("Cannot write transcript logs");
         log<<"id\tfinal\tstart_s\tend_s\tcompute_ms\ttext\n";
+        segments<<"id\tfinal\tstart_s\tend_s\tsamples\n";
         std::mutex mutex;
         std::condition_variable cv;
         SegmentQueue jobs;
@@ -69,8 +71,8 @@ void Pipeline::run(){
                     auto text=engine.transcribe(job->audio);
                     auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-before).count();
                     if(version!=epoch_.load()||input_.paused||stop_)continue;
+                    log<<job->id<<'\t'<<job->final<<'\t'<<job->start<<'\t'<<job->end<<'\t'<<elapsed<<'\t'<<(text.empty()?"<ASR_EMPTY>":text)<<'\n';log.flush();
                     if(text.empty())continue;
-                    log<<job->id<<'\t'<<job->final<<'\t'<<job->start<<'\t'<<job->end<<'\t'<<elapsed<<'\t'<<text<<'\n';log.flush();
                     if(job->final){srt<<++srt_index<<'\n'<<stamp(job->start)<<" --> "<<stamp(std::max(job->end,job->start+0.01))<<'\n'<<text<<"\n\n";srt.flush();}
                     on_text_({job->id,job->final,text,job->start,job->end,elapsed});
                 }
@@ -104,6 +106,8 @@ void Pipeline::run(){
                 }
                 if(count){
                     for(auto& event:stream.accept(audio.data(),count)){
+                        segments<<event.id<<'\t'<<event.final<<'\t'<<event.start<<'\t'<<event.end<<'\t'<<event.audio.size()<<'\n';
+                        segments.flush();
                         std::lock_guard lock(mutex);auto old=jobs.drops;jobs.push(std::move(event));
                         if(jobs.drops!=old)on_status_("Overload: oldest pending sentence dropped");
                         cv.notify_one();
