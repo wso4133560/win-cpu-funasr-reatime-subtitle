@@ -8,9 +8,36 @@ Windows 系统声音 → WASAPI Loopback → 常驻 FSMN-VAD / SenseVoice CPU �
 需要 Windows 10 1903 或更新版本 / Windows 11 x64、支持 AVX2 的 CPU、Visual Studio 2022 C++ 桌面开发工具和 PowerShell 7。
 依赖、模型、构建产物都保存在项目目录内。Git 不包含大型模型、录音或识别日志。
 
+## 模型下载
+
+程序需要以下两个 GGUF 模型，必须放在项目根目录的 `models/` 下：
+
+| 文件 | 用途 | SHA256 |
+| --- | --- | --- |
+| `sensevoice-small-q8.gguf` | SenseVoiceSmall 中英文语音识别 | `4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5` |
+| `fsmn-vad.gguf` | FSMN 语音活动检测 | `1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479` |
+
+联网时单独下载模型：
+
+```powershell
+pwsh -File scripts/download-models.ps1
+```
+
+脚本从 [SenseVoiceSmall-GGUF](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF)
+和 [fsmn-vad-GGUF](https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF) 下载，下载到 `.part`
+文件后校验 SHA256，校验成功才改名为正式模型文件。已存在且校验正确的模型会跳过下载。
+
+如果目标机器不能联网，可以先把两个同名文件放到本地缓存目录，再执行：
+
+```powershell
+pwsh -File scripts/download-models.ps1 -ModelSource D:\path\to\funasr-models
+```
+
+`bootstrap.ps1` 会自动调用这个模型脚本，同时下载项目锁定的 llama.cpp 依赖；只需要完整初始化时执行：
+
 ```powershell
 pwsh -File scripts/bootstrap.ps1
-# 已有模型时可以避免重复下载：
+# 已有本地模型缓存时：
 # pwsh -File scripts/bootstrap.ps1 -ModelSource ..\gguf
 pwsh -File scripts/build.ps1
 .\build\Release\FunASRSubtitle.exe
