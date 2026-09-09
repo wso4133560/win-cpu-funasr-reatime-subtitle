@@ -333,16 +333,13 @@ struct SenseVoice::Impl {
     for(int n=0;n<N;n++){ const float*col=&lg[(size_t)n*V]; int am=0; float best=col[0];
       for(int v=1;v<V;v++) if(col[v]>best){best=col[v];am=v;}
       if(am!=prev && am!=m.c.blank) seg_ids.push_back(am); prev=am; }
+    // CTC can emit a transient <|nospeech|> meta token inside an otherwise
+    // valid utterance; detok_sv() removes meta tokens from the text.
     std::string result;
-    bool speech=false;
-    for(int id:seg_ids) if(id>=0&&id<(int)vocab.size()) {
-      // CTC can emit a transient <|nospeech|> meta token inside an otherwise
-      // valid utterance. Only the explicit Speech tag decides whether this
-      // segment is speech; detok_sv() removes both meta tokens from the text.
-      if(vocab[id]=="<|Speech|>") speech=true;
-    }
-    if(!speech) return {};
     result=detok_sv(seg_ids,vocab,false);
+    // The VAD has already gated this window. Some CTC paths omit the Speech
+    // meta tag while still producing lexical tokens, so non-empty text is the
+    // reliable final criterion here.
     return result;
 
   }
