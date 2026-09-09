@@ -1,0 +1,13 @@
+/build*/
+/dependencies/
+/models/*.gguf
+/logs/
+/test-output/
+*.wav
+*.mp3
+__pycache__/
+.vs/
+/settings.ini
+/build-output.log
+/models/*.part
+/*.exe
