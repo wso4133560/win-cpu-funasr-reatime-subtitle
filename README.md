@@ -43,6 +43,17 @@ pwsh -File scripts/build.ps1
 .\build\Release\FunASRSubtitle.exe
 ```
 
+制作完整安装包（需要安装 NSIS）：
+
+```powershell
+pwsh -File scripts/package-installer.ps1
+```
+
+安装包输出到 `install/FunASRSubtitle-Setup.exe`，包含运行程序、SenseVoiceSmall
+识别模型、FSMN-VAD 模型、应用图标、README、第三方说明、开始菜单和桌面快捷方式以及卸载程序。
+安装默认使用当前用户目录 `%LOCALAPPDATA%\Programs\FunASRSubtitle`，不要求管理员权限；
+字幕日志和设置保存在安装目录中。安装包旁边会生成同名 `.sha256` 校验文件。
+
 程序向上查找包含 `models/sensevoice-small-q8.gguf` 的目录。打包时将 EXE、`models/`、
 第三方许可证放在同一目录即可。CPU 图和音频转换均在本进程完成。
 
