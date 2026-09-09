@@ -23,7 +23,7 @@ class Segmenter {
 public:
     void reset(){active_=false;pre_.clear();audio_.clear();silence_=speech_=last_partial_=0;}
     std::optional<Segment> feed(const float* frame,float probability) {
-        constexpr size_t frame_size=160,pre_size=3200;
+        constexpr size_t frame_size=160,pre_size=3200,onset_size=480,max_audio=192000;
         clock_+=frame_size;
         double energy=0;for(size_t i=0;i<frame_size;++i)energy+=frame[i]*frame[i];
         // Digital silence / very low converter noise should never activate ASR.
@@ -32,15 +32,25 @@ public:
             pre_.insert(pre_.end(),frame,frame+frame_size);
             while(pre_.size()>pre_size)pre_.pop_front();
             speech_=voice?speech_+frame_size:0;
-            if(speech_<800)return {};
+            if(speech_<onset_size)return {};
             active_=true;++id_;audio_.assign(pre_.begin(),pre_.end());pre_.clear();
             start_=clock_-audio_.size();silence_=last_partial_=0;
         }else audio_.insert(audio_.end(),frame,frame+frame_size);
         silence_=voice?0:silence_+frame_size;
-        const bool final=silence_>=6400||audio_.size()>=128000;
+        const bool forced=audio_.size()>=max_audio;
+        const bool final=silence_>=6400||forced;
         if(final){
-            Segment out{id_,true,std::move(audio_),double(start_)/16000,double(clock_-silence_)/16000};
-            reset();return out;
+            // Keep the only copy of a word that crosses a hard boundary.
+            std::vector<float> carry;
+            if(forced&&audio_.size()>pre_size){
+                carry.assign(audio_.end()-pre_size,audio_.end());
+                audio_.resize(audio_.size()-pre_size);
+            }
+            const double end=forced?start_+double(audio_.size())/16000:double(clock_-silence_)/16000;
+            Segment out{id_,true,std::move(audio_),double(start_)/16000,end};
+            reset();
+            if(!carry.empty())pre_=std::deque<float>(carry.begin(),carry.end());
+            return out;
         }
         if(audio_.size()>=16000 && audio_.size()-last_partial_>=16000){
             last_partial_=audio_.size();

@@ -12,6 +12,17 @@ int main(){
     CHECK(finals==1);CHECK(partials>=2);CHECK(!s.flush());
     for(int i=0;i<100;++i)CHECK(!s.feed(frame,0));
     for(int i=0;i<100;++i)s.feed(frame,1);s.reset();CHECK(!s.flush());
+    // A short fast word should activate VAD, and a forced boundary should retain
+    // 200 ms of context for the following segment.
+    Segmenter fast;std::optional<Segment> forced;int forced_count=0;
+    for(int i=0;i<1205;++i)if(auto e=fast.feed(frame,1)){if(e->final){forced=std::move(e);++forced_count;}}
+    CHECK(forced_count==1);CHECK(forced->audio.size()<=192000-3200);CHECK(forced->end<12.0);
+    std::optional<Segment> next;
+    for(int i=0;i<220;++i)if(auto e=fast.feed(frame,1)){if(!e->final){next=std::move(e);break;}}
+    CHECK(next&&next->id==forced->id+1&&next->audio.size()>3200);
+    Segmenter short_word;for(int i=0;i<3;++i)CHECK(!short_word.feed(frame,1));
+    bool short_final=false;for(int i=0;i<50;++i)if(auto e=short_word.feed(frame,0))short_final=e->final;
+    CHECK(short_final);
     std::fill(std::begin(frame),std::end(frame),0.f);
     for(int i=0;i<150;++i)CHECK(!s.feed(frame,1));CHECK(!s.flush());
     SegmentQueue queue;queue.push({1,false,{}});queue.push({1,false,{1}});CHECK(queue.pop()->audio.size()==1);

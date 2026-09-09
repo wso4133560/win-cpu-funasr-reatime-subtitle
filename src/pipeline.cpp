@@ -86,7 +86,10 @@ void Pipeline::run(){
             auto last_packet=Clock::now();
             while(!stop_){
                 const auto drops=input_.dropped.load(),route=input_.reroutes.load();
-                if(drops!=old_drops||route!=old_route){old_drops=drops;old_route=route;++epoch_;on_status_("Audio discontinuity: buffer reset");}
+                if(drops!=old_drops||route!=old_route){
+                    auto new_drops=drops-old_drops;old_drops=drops;old_route=route;++epoch_;
+                    on_status_(new_drops?"Audio buffer overflow: dropped samples; context reset":"Audio device changed: context reset");
+                }
                 if(queue_epoch!=epoch_.load()){
                     stream.reset();input_.ring.clear();
                     std::lock_guard lock(mutex);jobs.clear();queue_epoch=epoch_.load();
