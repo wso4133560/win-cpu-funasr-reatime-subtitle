@@ -29,7 +29,8 @@ pwsh -File scripts/build.ps1
 - `Ctrl+Alt+P`：暂停 / 继续；`Ctrl+Alt+L`：点击穿透 / 解锁；`Ctrl+Alt+Q`：退出。
 - 菜单可调字号、重启采集及模型、打开字幕目录。
 - `logs/` 按会话保存最终 SRT、含临时修订的 TSV，以及 VAD 产生的 `.segments.tsv`。
-  TSV 中的 `<ASR_EMPTY>` 表示已经检测到语音片段但 ASR 没有返回文字，可用来区分 VAD 漏检和模型空结果。本地保存，不上传。
+  TSV 中的 `<ASR_EMPTY>` 表示已经检测到语音片段但 ASR 没有返回文字，可用来区分 VAD 漏检和模型空结果；
+  如果最终重识别为空但之前的临时结果有文字，程序会保留最后一个临时结果生成最终字幕。本地保存，不上传。
 - `settings.ini` 可设 `[engine] threads=8`，`[overlay] font=28`、`opacity=175`（30–240）。
 
 ## 实现边界

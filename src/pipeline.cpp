@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
 using Clock=std::chrono::steady_clock;
 
 std::vector<Segment> StreamingVad::accept(const float* samples,size_t count){
@@ -60,6 +61,7 @@ void Pipeline::run(){
         auto infer=std::jthread([&]{
             try{
                 int srt_index=0;
+                std::unordered_map<uint64_t,std::string> last_text;
                 while(true){
                     std::optional<Segment> job;
                     uint64_t version;
@@ -71,9 +73,18 @@ void Pipeline::run(){
                     auto text=engine.transcribe(job->audio);
                     auto elapsed=std::chrono::duration<double,std::milli>(Clock::now()-before).count();
                     if(version!=epoch_.load()||input_.paused||stop_)continue;
+                    if(!text.empty())last_text[job->id]=text;
+                    else if(job->final){
+                        // A longer partial can flip SenseVoice's no-speech tag even
+                        // after an earlier partial produced useful text. Keep that
+                        // last confirmed revision for the final subtitle.
+                        auto it=last_text.find(job->id);
+                        if(it!=last_text.end())text=it->second;
+                    }
                     log<<job->id<<'\t'<<job->final<<'\t'<<job->start<<'\t'<<job->end<<'\t'<<elapsed<<'\t'<<(text.empty()?"<ASR_EMPTY>":text)<<'\n';log.flush();
                     if(text.empty())continue;
                     if(job->final){srt<<++srt_index<<'\n'<<stamp(job->start)<<" --> "<<stamp(std::max(job->end,job->start+0.01))<<'\n'<<text<<"\n\n";srt.flush();}
+                    if(job->final)last_text.erase(job->id);
                     on_text_({job->id,job->final,text,job->start,job->end,elapsed});
                 }
             }catch(const std::exception& e){on_status_(std::string("Inference error: ")+e.what());stop_=true;}

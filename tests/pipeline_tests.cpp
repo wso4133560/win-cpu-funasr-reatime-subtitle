@@ -20,6 +20,9 @@ int main(){
     std::optional<Segment> next;
     for(int i=0;i<220;++i)if(auto e=fast.feed(frame,1)){if(!e->final){next=std::move(e);break;}}
     CHECK(next&&next->id==forced->id+1&&next->audio.size()>3200);
+    std::optional<Segment> forced_again;
+    for(int i=0;i<1250;++i)if(auto e=fast.feed(frame,1)){if(e->final){forced_again=std::move(e);break;}}
+    CHECK(forced_again&&forced_again->id==forced->id+1&&forced_again->end<25.0);
     Segmenter short_word;for(int i=0;i<3;++i)CHECK(!short_word.feed(frame,1));
     bool short_final=false;for(int i=0;i<50;++i)if(auto e=short_word.feed(frame,0))short_final=e->final;
     CHECK(short_final);

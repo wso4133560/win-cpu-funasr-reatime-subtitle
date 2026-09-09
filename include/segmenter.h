@@ -46,7 +46,7 @@ public:
                 carry.assign(audio_.end()-pre_size,audio_.end());
                 audio_.resize(audio_.size()-pre_size);
             }
-            const double end=forced?start_+double(audio_.size())/16000:double(clock_-silence_)/16000;
+            const double end=forced?double(start_+audio_.size())/16000.0:double(clock_-silence_)/16000.0;
             Segment out{id_,true,std::move(audio_),double(start_)/16000,end};
             reset();
             if(!carry.empty())pre_=std::deque<float>(carry.begin(),carry.end());
