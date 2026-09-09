@@ -336,7 +336,9 @@ struct SenseVoice::Impl {
     std::string result;
     bool speech=false;
     for(int id:seg_ids) if(id>=0&&id<(int)vocab.size()) {
-      if(vocab[id]=="<|nospeech|>") return {};
+      // CTC can emit a transient <|nospeech|> meta token inside an otherwise
+      // valid utterance. Only the explicit Speech tag decides whether this
+      // segment is speech; detok_sv() removes both meta tokens from the text.
       if(vocab[id]=="<|Speech|>") speech=true;
     }
     if(!speech) return {};
