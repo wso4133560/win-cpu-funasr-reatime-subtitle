@@ -15,7 +15,8 @@
 namespace fs=std::filesystem;
 using namespace Gdiplus;
 constexpr UINT WM_TEXT_READY=WM_APP+1,WM_STATUS_READY=WM_APP+2,WM_TRAY=WM_APP+3,WM_REVEAL=WM_APP+4;
-constexpr int Pause=100,Lock=101,Bigger=102,Smaller=103,Restart=104,Exit=105,Logs=106,Show=107;
+constexpr int Pause=100,Lock=101,Bigger=102,Smaller=103,Restart=104,Exit=105,Logs=106,Show=107,ThreadBase=200;
+constexpr int thread_presets[]={1,2,4,8,12,16,24,32};
 struct App {
     HWND window{};
     fs::path root;
@@ -153,6 +154,11 @@ void start_pipeline(){
     app.pipeline->start();render();
 }
 void command(int id){
+    if(id>=ThreadBase&&id<ThreadBase+static_cast<int>(std::size(thread_presets))){
+        int selected=thread_presets[id-ThreadBase];
+        if(selected!=app.threads){app.threads=selected;start_pipeline();}
+        save_settings();render();return;
+    }
     switch(id){
     case Show:show_overlay(true);return;
     case Pause:
@@ -177,6 +183,12 @@ void menu(){
     AppendMenuW(m,MF_STRING,Pause,app.paused?L"Resume  Ctrl+Alt+P":L"Pause  Ctrl+Alt+P");
     AppendMenuW(m,MF_STRING|(app.locked?MF_CHECKED:0),Lock,L"Click-through  Ctrl+Alt+L");
     AppendMenuW(m,MF_STRING,Bigger,L"Larger text");AppendMenuW(m,MF_STRING,Smaller,L"Smaller text");
+    HMENU threads=CreatePopupMenu();
+    for(int i=0;i<static_cast<int>(std::size(thread_presets));++i){
+        auto label=std::to_wstring(thread_presets[i])+L" threads";
+        AppendMenuW(threads,MF_STRING|(app.threads==thread_presets[i]?MF_CHECKED:0),ThreadBase+i,label.c_str());
+    }
+    AppendMenuW(m,MF_POPUP,reinterpret_cast<UINT_PTR>(threads),L"CPU recognition threads");
     AppendMenuW(m,MF_STRING,Restart,L"Restart audio and models");AppendMenuW(m,MF_STRING,Logs,L"Open transcript folder");
     AppendMenuW(m,MF_SEPARATOR,0,nullptr);AppendMenuW(m,MF_STRING,Exit,L"Exit  Ctrl+Alt+Q");
     POINT p;GetCursorPos(&p);SetForegroundWindow(app.window);
