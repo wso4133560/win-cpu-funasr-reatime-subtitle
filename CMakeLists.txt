@@ -50,3 +50,8 @@ enable_testing()
 add_test(NAME pipeline_tests COMMAND pipeline_tests)
 add_test(NAME overlay_tests COMMAND overlay_tests $<TARGET_FILE:FunASRSubtitle>)
 set_tests_properties(overlay_tests PROPERTIES TIMEOUT 20)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME metrics_tests COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+    -s "${CMAKE_SOURCE_DIR}/tests" -p test_metrics.py -v)
+endif()

@@ -31,11 +31,16 @@ static void fftc(std::vector<float>&re,std::vector<float>&im,int n){for(int i=1,
   for(int len=2;len<=n;len<<=1){double a=-2.0*M_PI/len;float wr=cosf(a),wi=sinf(a);for(int i=0;i<n;i+=len){float cr=1,ci=0;for(int k=0;k<len/2;k++){float ur=re[i+k],ui=im[i+k];
     float vr=re[i+k+len/2]*cr-im[i+k+len/2]*ci,vi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;re[i+k]=ur+vr;im[i+k]=ui+vi;re[i+k+len/2]=ur-vr;im[i+k+len/2]=ui-vi;float nc=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=nc;}}}}
 static std::vector<std::vector<float>> fbank80(std::vector<float> wav){
-  for(auto&v:wav)v*=32768.0f; std::vector<float>win(WINLEN);
-  for(int i=0;i<WINLEN;i++)win[i]=0.54f-0.46f*cosf(2.0f*M_PI*i/(WINLEN-1));
-  const int NB=NFFT/2+1; float bw=(float)FS/NFFT,ml=melf(LOWF),mh=melf(HIGHF),dm=(mh-ml)/(NMEL+1);
-  std::vector<std::vector<float>>fb(NMEL,std::vector<float>(NB,0.0f));
-  for(int m=0;m<NMEL;m++){float L=ml+m*dm,C=ml+(m+1)*dm,R=ml+(m+2)*dm;for(int k=0;k<NB;k++){float mf=melf(bw*k);if(mf>L&&mf<R)fb[m][k]=mf<=C?(mf-L)/(C-L):(R-mf)/(R-C);}}
+  for(auto&v:wav)v*=32768.0f;
+  static const auto win=[] {std::vector<float> values(WINLEN);
+    for(int i=0;i<WINLEN;i++)values[i]=0.54f-0.46f*cosf(2.0f*M_PI*i/(WINLEN-1));return values;}();
+  const int NB=NFFT/2+1;
+  static const auto fb=[] {constexpr int bins=NFFT/2+1;
+    float bw=(float)FS/NFFT,ml=melf(LOWF),mh=melf(HIGHF),dm=(mh-ml)/(NMEL+1);
+    std::vector<std::vector<float>> values(NMEL,std::vector<float>(bins,0.0f));
+    for(int m=0;m<NMEL;m++){float L=ml+m*dm,C=ml+(m+1)*dm,R=ml+(m+2)*dm;
+      for(int k=0;k<bins;k++){float mf=melf(bw*k);if(mf>L&&mf<R)values[m][k]=mf<=C?(mf-L)/(C-L):(R-mf)/(R-C);}}
+    return values;}();
   int N=wav.size(),T=(N-WINLEN)/SHIFT+1; if(T<1)T=0; std::vector<std::vector<float>>feat(T,std::vector<float>(NMEL));
   std::vector<float>re(NFFT),im(NFFT),fr(WINLEN);const float fl=1.1920929e-07f;
   for(int t=0;t<T;t++){const float*s=wav.data()+t*SHIFT;double mn=0;for(int i=0;i<WINLEN;i++)mn+=s[i];mn/=WINLEN;
@@ -65,8 +70,15 @@ using namespace funasr_vad_impl;
 struct SpeechVad::Impl {
   vad m;
   ggml_backend_t be=nullptr;
+  ggml_threadpool_t threadpool=nullptr;
+  ggml_gallocr_t allocator=nullptr;
   int idim=0,pd=0,nl=0,lorder=0,od=0,lm=0,ln=0,threads=2;
-  ~Impl(){if(be)ggml_backend_free(be);if(m.ctx)ggml_free(m.ctx);}
+  ~Impl(){
+    if(allocator)ggml_gallocr_free(allocator);
+    if(be)ggml_backend_free(be);
+    if(threadpool)ggml_threadpool_free(threadpool);
+    if(m.ctx)ggml_free(m.ctx);
+  }
   void load(const std::string& gguf_path,int thread_count){
     threads=thread_count;
   gguf_init_params ip={false,&m.ctx}; gguf_context*gg=gguf_init_from_file(gguf_path.c_str(),ip);
@@ -89,6 +101,12 @@ struct SpeechVad::Impl {
 
     be=ggml_backend_cpu_init();
     if(!be) throw std::runtime_error("FSMN-VAD CPU initialization failed");
+    auto pool_params=ggml_threadpool_params_default(threads);
+    pool_params.poll=0;
+    threadpool=ggml_threadpool_new(&pool_params);
+    if(!threadpool)throw std::runtime_error("FSMN-VAD CPU threadpool initialization failed");
+    ggml_backend_cpu_set_threadpool(be,threadpool);
+    allocator=ggml_gallocr_new(ggml_backend_cpu_buffer_type());
   }
   std::vector<float> run(const std::vector<float>& wav){
   auto feat=fbank80(wav); int T=0; auto feats=lfr(feat,lm,ln,T);   // [T,400]
@@ -113,11 +131,11 @@ struct SpeechVad::Impl {
   h=lin(c,m.g("encoder.out_linear2.linear.weight"),m.g("encoder.out_linear2.linear.bias"),h);
   h=ggml_soft_max(c,h); ggml_set_output(h);
   ggml_cgraph*gf=ggml_new_graph(c); ggml_build_forward_expand(gf,h);
-  ggml_gallocr_t ga=ggml_gallocr_new(ggml_backend_cpu_buffer_type()); ggml_gallocr_alloc_graph(ga,gf);
+  if(!ggml_gallocr_alloc_graph(allocator,gf)){ggml_free(c);throw std::runtime_error("FSMN-VAD graph allocation failed");}
   ggml_backend_tensor_set(x,feats.data(),0,ggml_nbytes(x)); ggml_backend_cpu_set_n_threads(be,threads);
   bool ok=ggml_backend_graph_compute(be,gf)==GGML_STATUS_SUCCESS;
   std::vector<float> sc((size_t)od*T); if(ok)ggml_backend_tensor_get(h,sc.data(),0,ggml_nbytes(h));
-  ggml_gallocr_free(ga);ggml_free(c);
+  ggml_free(c);
   if(!ok) throw std::runtime_error("FSMN-VAD compute failed");
   std::vector<float> probabilities(T);
   for(int t=0;t<T;++t) probabilities[t]=1.0f-sc[(size_t)t*od];

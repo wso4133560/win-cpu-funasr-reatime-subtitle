@@ -16,12 +16,12 @@ struct Segment {
 // Input frames are exactly 10 ms. Partial revisions replace, never append to, a sentence.
 class Segmenter {
     uint64_t id_=0;
-    size_t clock_=0,start_=0, silence_=0,speech_=0,last_partial_=0;
+    size_t clock_=0,start_=0, silence_=0,speech_=0,next_partial_=16000;
     bool active_=false;
     std::deque<float> pre_;
     std::vector<float> audio_;
 public:
-    void reset(){active_=false;pre_.clear();audio_.clear();silence_=speech_=last_partial_=0;}
+    void reset(){active_=false;pre_.clear();audio_.clear();silence_=speech_=0;next_partial_=16000;}
     std::optional<Segment> feed(const float* frame,float probability) {
         constexpr size_t frame_size=160,pre_size=3200,onset_size=480,max_audio=192000;
         clock_+=frame_size;
@@ -34,7 +34,7 @@ public:
             speech_=voice?speech_+frame_size:0;
             if(speech_<onset_size)return {};
             active_=true;++id_;audio_.assign(pre_.begin(),pre_.end());pre_.clear();
-            start_=clock_-audio_.size();silence_=last_partial_=0;
+            start_=clock_-audio_.size();silence_=0;next_partial_=16000;
         }else audio_.insert(audio_.end(),frame,frame+frame_size);
         silence_=voice?0:silence_+frame_size;
         const bool forced=audio_.size()>=max_audio;
@@ -48,12 +48,21 @@ public:
             }
             const double end=forced?double(start_+audio_.size())/16000.0:double(clock_-silence_)/16000.0;
             Segment out{id_,true,std::move(audio_),double(start_)/16000,end};
+            const auto trailing_silence=silence_;
             reset();
-            if(!carry.empty())pre_=std::deque<float>(carry.begin(),carry.end());
+            if(!carry.empty()){
+                if(trailing_silence<carry.size()){
+                    // Speech already confirmed in the retained tail must not need
+                    // another onset. Preserve it even if speech stops at this cut.
+                    active_=true;++id_;audio_=std::move(carry);
+                    start_=clock_-audio_.size();silence_=trailing_silence;
+                }else pre_=std::deque<float>(carry.begin(),carry.end());
+            }
             return out;
         }
-        if(audio_.size()>=16000 && audio_.size()-last_partial_>=16000){
-            last_partial_=audio_.size();
+        if(audio_.size()>=next_partial_){
+            // Preserve early feedback, then reduce repeated long-prefix inference.
+            next_partial_=audio_.size()+(audio_.size()>=64000?32000:16000);
             return Segment{id_,false,audio_,double(start_)/16000,double(clock_)/16000};
         }
         return {};

@@ -50,12 +50,16 @@ static void fftc(std::vector<float>&re,std::vector<float>&im,int n){
       re[i+k]=ur+vr;im[i+k]=ui+vi;re[i+k+len/2]=ur-vr;im[i+k+len/2]=ui-vi;float nc=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=nc;}}}
 }
 static std::vector<float> compute_fbank(std::vector<float> wav,int&T_out){
-  for(auto&v:wav)v*=32768.0f; std::vector<float> win(WINLEN);
-  for(int i=0;i<WINLEN;i++)win[i]=0.54f-0.46f*cosf(2.0f*M_PI*i/(WINLEN-1));
-  const int NBIN=NFFT/2+1; float bw=(float)FS/NFFT,ml=melf(LOWF),mh=melf(HIGHF),dm=(mh-ml)/(NMEL+1);
-  std::vector<std::vector<float>> fb(NMEL,std::vector<float>(NBIN,0.0f));
-  for(int m=0;m<NMEL;m++){float L=ml+m*dm,C=ml+(m+1)*dm,R=ml+(m+2)*dm;
-    for(int k=0;k<NBIN;k++){float mf=melf(bw*k); if(mf>L&&mf<R)fb[m][k]=mf<=C?(mf-L)/(C-L):(R-mf)/(R-C);}}
+  for(auto&v:wav)v*=32768.0f;
+  static const auto win=[] {std::vector<float> values(WINLEN);
+    for(int i=0;i<WINLEN;i++)values[i]=0.54f-0.46f*cosf(2.0f*M_PI*i/(WINLEN-1));return values;}();
+  const int NBIN=NFFT/2+1;
+  static const auto fb=[] {constexpr int bins=NFFT/2+1;
+    float bw=(float)FS/NFFT,ml=melf(LOWF),mh=melf(HIGHF),dm=(mh-ml)/(NMEL+1);
+    std::vector<std::vector<float>> values(NMEL,std::vector<float>(bins,0.0f));
+    for(int m=0;m<NMEL;m++){float L=ml+m*dm,C=ml+(m+1)*dm,R=ml+(m+2)*dm;
+      for(int k=0;k<bins;k++){float mf=melf(bw*k);if(mf>L&&mf<R)values[m][k]=mf<=C?(mf-L)/(C-L):(R-mf)/(R-C);}}
+    return values;}();
   int N=wav.size(),T=(N-WINLEN)/SHIFT+1; std::vector<std::vector<float>> feat(T,std::vector<float>(NMEL));
   std::vector<float> re(NFFT),im(NFFT),fr(WINLEN); const float fl=1.1920929e-07f;
   for(int t=0;t<T;t++){const float*s=wav.data()+t*SHIFT; double mn=0; for(int i=0;i<WINLEN;i++)mn+=s[i]; mn/=WINLEN;
@@ -258,15 +262,28 @@ static std::string detok_sv(const std::vector<int>&ids,const std::vector<std::st
 struct SenseVoice::Impl {
   model m;
   graph_backend graph_be;
+  ggml_threadpool_t threadpool=nullptr;
+  ggml_gallocr_t allocator=nullptr;
   static constexpr int F=560;
   int D=0,V=0,nq=0,threads=8;
   std::vector<int> qtok;
   std::vector<std::string> vocab;
   std::vector<float> embed_f32;
-  ~Impl(){free_model(m); if(graph_be.backend) ggml_backend_free(graph_be.backend);}
+  ~Impl(){
+    if(allocator)ggml_gallocr_free(allocator);
+    free_model(m);
+    if(graph_be.backend)ggml_backend_free(graph_be.backend);
+    if(threadpool)ggml_threadpool_free(threadpool);
+  }
   void load(const std::string& gguf_path,int thread_count){
     threads=thread_count;
     graph_be=make_graph_backend("cpu");
+    auto pool_params=ggml_threadpool_params_default(threads);
+    pool_params.poll=0; // Speech jobs are intermittent; workers should sleep idle.
+    threadpool=ggml_threadpool_new(&pool_params);
+    if(!threadpool)throw std::runtime_error("SenseVoice CPU threadpool initialization failed");
+    ggml_backend_cpu_set_threadpool(graph_be.backend,threadpool);
+    allocator=ggml_gallocr_new(graph_be.buffer_type);
   // load model
   trace_stage("[sensevoice] loading model metadata");
   if(!load_model_weights(gguf_path,graph_be.buffer_type,m))throw std::runtime_error("Invalid SenseVoice model"); gguf_context*gg=m.gguf;
@@ -320,8 +337,7 @@ struct SenseVoice::Impl {
     ggml_cgraph*gf=ggml_new_graph_custom(c,32768,false); ggml_build_forward_expand(gf,logits);
     trace_stage("[sensevoice] graph built");
     trace_stage("[sensevoice] allocating graph");
-    ggml_gallocr_t ga=ggml_gallocr_new(graph_be.buffer_type); auto ga_guard=std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)>(ga, ggml_gallocr_free);
-    if(!ggml_gallocr_alloc_graph(ga,gf)) throw std::runtime_error("Graph allocation failed");
+    if(!ggml_gallocr_alloc_graph(allocator,gf)) throw std::runtime_error("Graph allocation failed");
     trace_stage("[sensevoice] graph allocated");
     ggml_backend_tensor_set(x,inp.data(),0,ggml_nbytes(x)); if(graph_be.is_cpu) ggml_backend_cpu_set_n_threads(graph_be.backend,threads);
     trace_stage("[sensevoice] compute starting");
